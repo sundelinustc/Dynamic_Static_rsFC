@@ -1,0 +1,191 @@
+---
+title: "SDL_R_DFC"
+author: "Delin Sun"
+date: "5/23/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load packages
+```{r,echo=FALSE}
+library(tidyverse) # for data manipulation
+library(DescTools) # for Fisher's r-to-z transformation
+library("readxl") # load .xls or .xlsx files
+library(data.table) # to make read & write files quicker
+#library(foreach) # for parallel processing
+#library(doParallel) # for parallel processing
+```
+
+# Functions -- SD of dynamic FC
+```{r,echo=FALSE}
+
+SDL_SD <- function(df, win_width = 30, win_overlap = 50, TR = 3) {
+  # Input
+  # --- df, ROI time series, Number of time points x Number of ROIs
+  # --- win_width, window width, default=30 s
+  # --- win_overlap, window overlap, default=50%, while 100% means static rsFC
+  # --- TR, default=3 s
+  # Output
+  # --- a matrix of standard deviation for dynamic rsFC, or Fisher-Z-transformed Pearson's correlation coefficients for static rsFC
+  
+  if (win_overlap < 100) { # dynamic rsFC
+    ww <- round(win_width / TR) # window width in number of volumes (time points)
+    wo <- round(win_width * win_overlap / (100 * TR)) # window overlap in number of volumes (time points)
+    
+    ws <- seq(1, dim(df)[1] - ww + 1, ww - wo) # sequence of the start time of each window
+    # the last start time must be able to correspond to a complete window
+    # dim(df)[1]: length of the time series in number of volumes (time points)
+    # ww-wo: step of adjacent windows in number of volumes (time points)
+    
+    # Z scores of correlation coefficients per time window
+    Z <- array(0, dim = c(dim(df)[2], dim(df)[2], length(ws))) # an empty matrix to contain Z values
+    for (i in 1:length(ws)) {
+      Z1 <- df[ws[i]:(ws[i] + ww - 1), ] %>% cor(use = 'na.or.complete') %>% FisherZ() # 3D arrays of Z scores of corr coef
+      diag(Z1) <- 0 # diagonal of matrix to 0
+      Z[, , i] <- Z1
+    }
+    
+    # standard deviation matrix
+    V_sd <- Z %>% apply(c(1, 2), sd, na.rm = TRUE)
+    
+  } else{ # static rsFC
+    Z <- array(0, dim = c(dim(df)[2], dim(df)[2])) # an empty matrix to contain Z values
+    Z <- df %>% cor(use = 'na.or.complete') %>% FisherZ() # matrix of Z scores of correlation coefficients
+    diag(Z) <- 0 # diagonal of matrix to 0
+    V_sd <- Z
+  }
+  
+  return(V_sd)
+}
+
+```
+
+
+# Calculation of SD (for dynamic rsFC) or corr. coef. (for static rsFC)
+```{r,echo=FALSE}
+# list data files
+#fdir <- list.files(path=file.path('..','Origins','ts'), pattern=".tsv", all.files=TRUE, full.names=TRUE, recursive = TRUE) # .tsv files in the Data directory
+
+wd <- 20 # window length (sec)
+wp <- 50 # overlap between consecutive windows (%)
+dirname <- paste0('sd_',wd,'_',wp) # e.g. 'sd_30_50'
+
+
+# load SbjInfo.csv
+df_sbj <- file.path('..','clinical_data','SbjInfo.csv') %>% read_csv() %>% distinct(fID, .keep_all=T) %>% drop_na() # 2693 sbj
+
+# load rois' info
+df_roi <- read_excel(file.path('..','Origins','network lsit.xlsx'), sheet="Sheet2") %>% dplyr::select(Label_Yeo:S) # (Yeo's 17 cortical networks & subcortical regions) including label, name, x/y/z coordinates
+
+# df_sbj <- tail(df_sbj, -1828) # jump over the first a few subjects who have been processed
+
+## Calculate SD or corr. coef. per subject
+for (fID1 in df_sbj$fID) {
+  fTR <- df_sbj %>% filter(fID==as.character(fID1)) %>% .$TR # get subject-specific TR
+
+  # load time series data
+  fin <- file.path('..','Origins','ts',fID1) %>% list.files(pattern='.tsv', full.names=TRUE, recursive=TRUE) # file fullname
+
+  if (length(fin) && file.exists(fin)){ # MUST write like this to avoid the error of "argument is of length zero"
+    df0 <- fin %>% read.table(sep = '\t', header = F) # time series: TRs x ROIs
+    colnames(df0) <- df_roi$ROI_Yeo # assign roi names
+
+    # SD calculation
+    df <- df0[,1:417] # all cortical (Schaefer2011 atlas with 400 cortical areas) & subcortical ROIs (FreeSurfer atlas)
+    df <- df %>% dplyr::select(where(~!all(is.na(.)))) # remove columns all with NA
+    colnam <- df %>% colnames() # extract column names
+
+    # main function to calculate SD or corr. coef. (when window overlap is 100%)
+    V_sd <- SDL_SD(df, win_width=wd, win_overlap=wp, TR=fTR)
+
+    colnames(V_sd) <- colnam # column names
+    rownames(V_sd) <- colnam # row names
+
+    # output filename
+    dir.create(file.path('..','Results','ROI-to-ROI',dirname,fID1), recursive=TRUE, showWarnings = FALSE) # create the output path if it does not exist
+    fout <- sub('.tsv', '_sd.csv', fin) # suffix
+    fout <- sub(file.path('..','Origins','ts',fID1),     file.path('..','Results','ROI-to-ROI',dirname,fID1),  fout, fixed=TRUE) # prefix including path
+
+    # save matrix of sd into csv file
+    V_sd %>% as.data.table() %>% fwrite(fout)
+    print(paste("SD matrix calculated & saved: ",fout))
+} else {
+  print(paste("No such a file: ",fID1))
+}
+
+}
+
+```
+
+
+
+# Extract & Save all seed-to-rois sd data for a given window width & overlap
+```{r,echo=FALSE}
+# seeds
+f_seedlist <- list(
+  'FreeSurfer_Left.Amygdala',
+  'FreeSurfer_Right.Amygdala',
+  'FreeSurfer_Left.Hippocampus',
+  'FreeSurfer_Right.Hippocampus')
+
+# list data files
+fnames <- list.files(path=file.path('..','Results','ROI-to-ROI', dirname), pattern=".csv", all.files=TRUE, full.names=TRUE, recursive = TRUE) # full path name
+fnames1 <- list.files(path=file.path('..','Results','ROI-to-ROI', dirname), all.files=F) %>% as.list() # only the folder names (i.e. fID)
+
+# load rois' info
+df_roi <- read_excel(file.path('..','Origins','network lsit.xlsx'), sheet="Sheet2") %>% dplyr::select(Label_Yeo:S) # Schaeffer's 400 cortical areas (based onYeo's 17 cortical networks) & Freesurfer subcortical regions (including label, name, x/y/z coordinates)
+
+roi_names <- df_roi$ROI_Yeo %>% as.list() %>% .[1:417] # names of all rois
+roi_names[1:400] <- paste0('X',roi_names[1:400]) # add a prefix 'X' to all columns beginning with 17
+roi_names <- gsub('-', '.', roi_names) %>% as.list() # replace '-' with '.'
+######
+
+
+###### run
+# for each seed
+for (f_seed in f_seedlist) {
+  # an empty matrix to contain SD values
+  M <- array(NA, dim=c(length(fnames1), 417)) %>% as.data.frame()
+  colnames(M) <- roi_names
+  f_out <- file.path('..','Results','ROI-to-ROI', paste0(dirname,'_seed=',f_seed,'.csv')) # output file name
+
+  # #setup parallel backend to use many processors
+  # cores <- detectCores()
+  # cl <- makeCluster(cores[1]-1) #not to overload your computer
+  # registerDoParallel(cl)
+
+  ## Calculate SD per subject
+  #foreach (i=1:length(fnames), .combine=rbind, .packages=c("data.table","tidyverse")) %dopar% {
+  for (i in 1:length(fnames)) {
+    # for each subject that has imaging data
+    df <- fnames[i] %>% read.table(sep = ',', header = T)
+    rownames(df) <- colnames(df)
+    coln <- df %>% colnames() %>% as.list() # extract df column names
+
+    # find and fill missing columns (there are missing data in some rois, and missing values vary across subjects)
+    roi_diff <- setdiff(roi_names, coln) # rois that in atlas but not in the subject
+    if (length(roi_diff)>0) {
+      df[,unlist(roi_diff)] <- NA # add the lost columns with NA
+      df[unlist(roi_diff),] <- NA # add the lost rows with NA
+      df <- df[unlist(roi_names),unlist(roi_names)] # re-order the columns and rows to follow the order of roinames
+    } # if there is missing value, fitted with NA
+
+    # fill the dataframe for output
+    M[i,] <- df %>% dplyr::select(f_seed) %>% t() # sd data to each subject (per row)
+    # M[,,i] <- df %>% as.matrix() %>% .[unlist(roi_names), unlist(roi_names)] # reorder matrix column & row names
+    # M[,,i] <- df %>% as.matrix() %>% reorder_mat(unlist(roi_names)) # reorder matrix column & row names
+    print(paste("Seed:", f_seed,"Loaded: i=", i, "of", length(fnames),"subjects,","fid=",fnames1[i]))
+  }
+
+  # output
+  M$fID <- fnames1 # add a column if fID, to be merged with demographic/clinical data
+  fwrite(M, f_out)
+}
+```
+
+
+

@@ -1,0 +1,518 @@
+---
+title: "SDL_R_Main"
+author: "Delin Sun"
+date: "2023-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Aims
+
+This R Markdown document aims at completing analyses using the DS package
+
+## Packages
+```{r, echo=FALSE}
+if (!require("pacman")) {
+  install.packages("pacman")
+} # make sure that pacman is installed
+
+pacman::p_load(tidyverse,    # data management
+               plyr,         # data manegement
+               data.table,   # quick read & write files
+               GGally,       # ggpairs plots
+               ggseg,        # atlas-based brain maps, cortical / subcortical (e.g. aseg)
+               ggsegSchaefer # Schaefer's atlas, e.g. schaefer17_400
+)
+```
+
+### Authors' info
+-- Title page (Author list, affiliation list)
+-- Acknowledgement page (Author contributions, Acknowledgments, Conflict of interest)
+```{r,echo=FALSE}
+source("./DS/DS_authors.R")
+
+# create Word docs of authors, affiliations, acknowledgement, author contribution, and conflict of interest
+DS_authors(
+  fin = "../Data/PGC-PTSD Authors.xlsx",
+  fsheet = "Delin - Dynamic rsFC",
+  fnames = c('First Name', 'Middle I.', 'Last Name'),
+  faffs = c(
+    'Primary Institution',
+    'Secondary Institution',
+    'Additional Institutions 1',
+    'Additional Institutions 2',
+    'Additional Institutions 3'
+  ),
+  fcontr = "Author Contribution",
+  fackn  = "Funding to Acknowledge",
+  fcoi   = "COI:",
+  fout_title_page = '../Results/DS/Drafts/DSdoc_Title.docx',
+  fout_ackn_page  = '../Results/DS/Drafts/DSdoc_AuthorContribution_Acknowledgment_COI.docx'
+)
+```
+
+## plot brain maps
+```{r,echo=FALSE}
+# subcortical plots
+ggseg(
+          atlas = 'aseg',
+          mapping = aes(fill = region),
+          color = 'white',
+          position = 'dispersed',
+          size = 0.5
+        ) +
+        theme(
+          axis.title.x=element_blank(),
+          axis.text.x=element_text(size = 18),
+          legend.position = "none"
+        )
+
+# cortical plots
+ggseg(
+          atlas = schaefer17_400,
+          mapping = aes(fill = region),
+          position = 'stacked'
+        ) +
+        theme(
+          axis.title = element_blank(),
+          axis.text.x = element_text(size = 18),
+          axis.text.y = element_text(size = 18),
+          legend.position = "none"
+        )
+```
+### Bold waveforms
+```{r,echo=FALSE}
+# load SbjInfo.csv
+df <-
+  file.path('..', 'Data', 'delin_harmonized_w_exclusions.csv') %>% read_csv(na=c('#NULL!', 'NA')) %>%
+  distinct(fID, .keep_all = T) # all subjects' info (N=2841)
+
+# load rois' info
+df_roi <- read_excel(file.path('..','Data','network lsit.xlsx'), sheet="Sheet2") %>% dplyr::select(Label_Yeo:S) # (Yeo's 17 cortical networks & subcortical regions) including label, name, x/y/z coordinates
+
+## Calculate SD or corr. coef. per subject
+fID1 <- df_sbj$fID[[1]]
+# load time series data
+fin <- file.path('..','Data','ts',fID1) %>% list.files(pattern='.tsv', full.names=TRUE, recursive=TRUE) # file fullname
+df <- fin %>% read.table(sep = '\t', header = F) # time series: TRs x ROIs
+colnames(df) <- df_roi$ROI_Yeo # assign roi names
+df$TRs <- 1:nrow(df)
+
+# Normalization the BOLD signals
+a <- df[c("FreeSurfer_Left-Amygdala","17Networks_LH_ContA_Cingm_1")] %>% sapply(function(x) (x-min(x))/(max(x)-min(x)))
+
+# dataframe for plotting
+df1 <- data.frame(
+  Time=df$TR * 3,
+  L_Amyg=a[,1],
+  ACC=a[,2]
+)
+
+# ggplot2
+df2 <- df1 %>% dplyr::select(c("Time","L_Amyg","ACC")) %>% pivot_longer(cols=!Time, names_to="Regions", values_to="BOLD")# 
+
+df2 %>% ggplot(aes(x=Time, y=BOLD, color=Regions)) + geom_line(linewidth=1) + geom_point() + theme_minimal() + labs(x="Time (sec)", y="Normalized Signals") + scale_colour_manual(labels = c('Left Amygdala', 'Anterior Cingulate Cortex'), values = c("red", "blue")) + theme(legend.position = "top",text = element_text(size=20))
+```
+
+### Table 1
+```{r,echo=FALSE}
+source("./DS/DS_table1.R")
+
+# load cleaned data & cleaned data info
+df0      <- file.path('..', 'Data', 'Data_cleaned.csv') %>% fread() %>% as.data.frame()
+
+df <- df0
+fmodel <- "~ Age  + Sex + curr_ptsd_sev_harmon + child_trauma_sev_harmon + depression_sev_harmon | curr_ptsd_dx"
+fnote <-
+  "Note: Continuous variables are presented as Mean ± SD, while categorical variables are presented as Count (Proportion in %).\n 
+The column named Statistics shows the statistical outputs of betwee-group comparisons. For categorical variables, the Chi-Square Test of Independence is used when all of the cell counts in a crosstable are more than 5; otherwise, the Fisher’s Exact Test is used.\n
+For the comparisons of continuous variables between two independent samples, the Two Sample t test (or Welch’s t test) is employed if the variances are equal (or unequal, estimated by an F test) for the two samples.\n
+In the case of comparisons of continuous variables between three or more independent samples, the One-Way ANOVA (or Welch's ANOVA) is employed if the variances are equal (or unequal, examined by the Levene's Test) across samples, and if all samples are normally distributed (examined by a Shapiro-Wilk normality test), and Tukey's ‘Honest Significant Difference’ method is employed to correct for post-hoc comparisons for the significant ANOVA output. The Kruskal-Wallis test is used if the assumption of normality is violated in any group, and the Dunn test is employed for post-hoc comparisons for significant Kruskal-Wallis test output.\n
+Missing values are not included in statistical analyses. All tests are two-tailed at the 0.05 level of significance.\n"
+
+# Create Table1 Object, convert to flextable, and change font
+tbl1 <- df %>% 
+  DS_table1(fmodel, fnote) %>% 
+  t1flex() 
+
+tbl1 <- tbl1%>%  
+  bold(part="header") %>%  
+  italic(j = which("Statistics"==(tbl1 %>% .$header %>% .$dataset %>% colnames()))) # make the column of statistics into italic
+
+tbl1
+
+# Save table into a Word document
+tbl1 %>% save_as_docx(path="Table1_example.docx")
+
+```
+
+
+## pair plots of some clinical variables
+```{r,echo=FALSE}
+# Function to return points and geom_smooth
+# allow for the method to be changed
+my_fn <- function(data, mapping, method="lm", ...){
+      p <- ggplot(data = data, mapping = mapping) + 
+        geom_point(size=0.6) + 
+        geom_smooth(method=method, ...) +
+        xlim(0, 1) +
+        ylim(0, 1)
+      p
+}
+
+df <- df0 %>% select(c('curr_ptsd_sev_harmon', 'child_trauma_sev_harmon', 'depression_sev_harmon')) %>% mutate(PTSD=curr_ptsd_sev_harmon, Child_Trauma = child_trauma_sev_harmon, Depression = depression_sev_harmon) %>% select(c('PTSD','Child_Trauma','Depression'))
+
+# ggpais plots    
+df %>% ggpairs(lower = list(continuous = my_fn))
+
+
+```
+
+
+
+### Statistical Modelling Parameters
+-- Models fit (linear regression models, linear mixed effects models, etc.) 
+-- Outputs: broom tables (statistical outputs & model estimations)
+<!-- -- ggplot2 plots -->
+<!-- -- Drafts of Methods & Results (as well as parts of Abstract & Discussion) -->
+```{r, echo=FALSE}
+# load cleaned data & cleaned data info
+df0      <- file.path('..', 'Data', 'Data_cleaned.csv') %>% fread() %>% as.data.frame()
+# df0_info <- file.path('..', 'Data', 'Data_cleaned_info.csv') %>% fread() %>% as.data.frame()
+
+df0_info <- NULL # for simple applications
+
+# names of columns as dependent variables (Y)
+Yname <- df0 %>% select(starts_with("DFC"), starts_with("SFC")) %>% colnames()
+
+# set the levels of factors
+df0$curr_ptsd_dx <- df0$curr_ptsd_dx %>% factor(levels=c('Control', 'PTSD'))
+df0$Sex          <- df0$Sex          %>% factor(levels=c('Male', 'Female'))
+df0$SITE         <- df0$SITE         %>% factor()
+
+# models
+mdls <- c(
+  'lmer(y ~ curr_ptsd_dx + Age + Sex + (1|SITE))',
+  'lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1|SITE))',
+  'lmer(y ~ curr_ptsd_dx * Age + Sex + (1|SITE))',
+  'lmer(y ~ curr_ptsd_dx * Sex + Age + (1|SITE))',
+  'lmer(y ~ curr_ptsd_dx * depression_sev_harmon   + Age + Sex + (1|SITE))',
+  'lmer(y ~ curr_ptsd_dx * child_trauma_sev_harmon + Age + Sex + (1|SITE))',
+  'lmer(y ~ curr_ptsd_dx * curr_ptsd_sev_harmon + Age + Sex + (1|SITE))'
+)
+
+# directory for final statistical results & model estimations
+fdir <- file.path('..',  'Results', 'DS', 'Stats')
+```
+
+
+### Run all models
+```{r,echo=FALSE}
+source("./DS/DS_stat.R")
+
+# # models for main & interaction effects
+# for (mdl in mdls){
+#   DS_stat(df0, df0_info, Yname, mdl, fdir)
+#   print(paste('Finished!!!', mdl))
+# }
+
+# # Post-hoc models: curr_ptsd_dx * Age
+# df0 %>% filter(curr_ptsd_dx=='Control') %>% DS_stat(df0_info, Yname,
+#                   'lmer(y ~ Age + Sex + (1|SITE))', fdir,
+#                   '_posthoc_Control_only')
+# df0 %>% filter(curr_ptsd_dx=='PTSD') %>% DS_stat(df0_info, Yname,
+#                   'lmer(y ~ Age + Sex + (1|SITE))', fdir,
+#                   '_posthoc_PTSD_only')
+# 
+# # Post-hoc models: curr_ptsd_dx * Sex
+# df0 %>% filter(curr_ptsd_dx=='Control') %>% DS_stat(df0_info, Yname,
+#                   'lmer(y ~ Sex + Age + (1|SITE))', fdir,
+#                   '_posthoc_Control_only')
+# df0 %>% filter(curr_ptsd_dx=='PTSD') %>% DS_stat(df0_info, Yname,
+#                   'lmer(y ~ Sex + Age + (1|SITE))', fdir,
+#                   '_posthoc_PTSD_only')
+# 
+# # Post-hoc models: curr_ptsd_dx * depression_sev_harmon
+# df0 %>% filter(curr_ptsd_dx=='Control') %>% DS_stat(df0_info, Yname,
+#                   'lmer(y ~ depression_sev_harmon + Age + Sex + (1|SITE))', fdir,
+#                   '_posthoc_Control_only')
+# df0 %>% filter(curr_ptsd_dx=='PTSD') %>% DS_stat(df0_info, Yname,
+#                   'lmer(y ~ depression_sev_harmon + Age + Sex + (1|SITE))', fdir,
+#                   '_posthoc_PTSD_only')
+# 
+# # Post-hoc models: curr_ptsd_dx * child_trauma_sev_harmon
+# df0 %>% filter(curr_ptsd_dx=='Control') %>% DS_stat(df0_info, Yname,
+#                   'lmer(y ~ child_trauma_sev_harmon + Age + Sex + (1|SITE))', fdir,
+#                   '_posthoc_Control_only')
+# df0 %>% filter(curr_ptsd_dx=='PTSD') %>% DS_stat(df0_info, Yname,
+#                   'lmer(y ~ child_trauma_sev_harmon + Age + Sex + (1|SITE))', fdir,
+#                   '_posthoc_PTSD_only')
+
+# Post-hoc models: curr_ptsd_dx * 
+df0 %>% filter(curr_ptsd_dx=='Control') %>% DS_stat(df0_info, Yname,
+                  'lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1|SITE))', fdir,
+                  '_posthoc_Control_only')
+df0 %>% filter(curr_ptsd_dx=='PTSD') %>% DS_stat(df0_info, Yname,
+                  'lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1|SITE))', fdir,
+                  '_posthoc_PTSD_only')
+```
+
+## Brain map Plots: (1) main effect of curr_ptsd_dx
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx + Age + Sex + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='curr_ptsd_dxPTSD', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'),
+               fdir = file.path('..','Results','DS','Results'))
+
+```
+## Brain map Plots: (1.1) main effect of curr_ptsd_sev_harmon
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='curr_ptsd_sev_harmon', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'),
+               fdir = file.path('..','Results','DS','Results'))
+```
+
+
+## Brain map Plots: (2) curr_ptsd_dx by Age interaction
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x Age + Sex + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='curr_ptsd_dxPTSD:Age', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'),
+               fdir = file.path('..','Results','DS','Results'))
+
+```
+
+## Brain map Plots: (3) curr_ptsd_dx by Sex interaction
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x Sex + Age + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='curr_ptsd_dxPTSD:SexFemale', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'),
+               fdir = file.path('..','Results','DS','Results'))
+
+```
+
+## Brain map Plots: (3.1) curr_ptsd_dx by Sex interaction
+## Post hoc: effect of Sex in Control only
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+fname <- file.path('..','Results','DS','Stats', 
+                   paste0('Statistics_lmer(y ~ Sex + Age + (1_SITE), data=.)_posthoc_Control_only','.csv'))
+fterm <- 'SexFemale'
+fdf0_info <- file.path('..', 'Data', 'Data_cleaned_info.csv')
+fmask <- file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x Sex + Age + (1_SITE), data=.)','.csv'))
+fmask_term <- 'curr_ptsd_dxPTSD:SexFemale'
+
+DS_plots_ggseg(fname, fterm, fdf0_info)#, fmask, fmask_term)
+
+```
+
+## Brain map Plots: (3.2) curr_ptsd_dx by Sex interaction
+## Post hoc: effect of Sex in PTSD only
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+fname <- file.path('..','Results','DS','Stats', 
+                   paste0('Statistics_lmer(y ~ Sex + Age + (1_SITE), data=.)_posthoc_PTSD_only','.csv'))
+fterm <- 'SexFemale'
+fdf0_info <- file.path('..', 'Data', 'Data_cleaned_info.csv')
+fmask <- file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x Sex + Age + (1_SITE), data=.)','.csv'))
+fmask_term <- 'curr_ptsd_dxPTSD:SexFemale'
+
+DS_plots_ggseg(fname, fterm, fdf0_info)#, fmask, fmask_term)
+
+```
+
+
+## Brain map Plots: (4) curr_ptsd_dx by depression interaction
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x depression_sev_harmon   + Age + Sex + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='curr_ptsd_dxPTSD:depression_sev_harmon', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'),
+               fdir = file.path('..','Results','DS','Results'))
+```
+
+## Brain map Plots: (4.1) curr_ptsd_dx by depression interaction
+## Post hoc: effect of depression in Control only
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+fname <- file.path('..','Results','DS','Stats', 
+                   paste0('Statistics_lmer(y ~ depression_sev_harmon + Age + Sex + (1_SITE), data=.)_posthoc_Control_only','.csv'))
+fterm <- 'depression_sev_harmon'
+fdf0_info <- file.path('..', 'Data', 'Data_cleaned_info.csv')
+fmask <- file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x depression_sev_harmon   + Age + Sex + (1_SITE), data=.)','.csv'))
+fmask_term <- 'curr_ptsd_dxPTSD:depression_sev_harmon '
+
+DS_plots_ggseg(fname, fterm, fdf0_info)#, fmask, fmask_term)
+```
+
+## Brain map Plots: (4.2) curr_ptsd_dx by depression interaction
+## Post hoc: effect of depression in PTSD only
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+fname <- file.path('..','Results','DS','Stats', 
+                   paste0('Statistics_lmer(y ~ depression_sev_harmon + Age + Sex + (1_SITE), data=.)_posthoc_PTSD_only','.csv'))
+fterm <- 'depression_sev_harmon'
+fdf0_info <- file.path('..', 'Data', 'Data_cleaned_info.csv')
+fmask <- file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x depression_sev_harmon   + Age + Sex + (1_SITE), data=.)','.csv'))
+fmask_term <- 'curr_ptsd_dxPTSD:depression_sev_harmon '
+
+DS_plots_ggseg(fname, fterm, fdf0_info)#, fmask, fmask_term)
+```
+
+## Brain map Plots: (5) curr_ptsd_dx by childhood trauma interaction
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x child_trauma_sev_harmon + Age + Sex + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='curr_ptsd_dxPTSD:child_trauma_sev_harmon', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'))
+```
+
+## Brain map Plots: (6) curr_ptsd_dx by PTSD severity interaction
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x curr_ptsd_sev_harmon + Age + Sex + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='curr_ptsd_dxPTSD:curr_ptsd_sev_harmon', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'),
+               fdir = file.path('..','Results','DS','Results'))
+```
+
+## Brain map Plots: (6.1) curr_ptsd_dx by PTSD severity interaction
+## Post hoc: effect of PTSD severity in Control only
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+fname <- file.path('..','Results','DS','Stats', 
+                   paste0('Statistics_lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1_SITE), data=.)_posthoc_Control_only','.csv'))
+fterm <- 'curr_ptsd_sev_harmon'
+fdf0_info <- file.path('..', 'Data', 'Data_cleaned_info.csv')
+fmask <- file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x curr_ptsd_sev_harmon + Age + Sex + (1_SITE), data=.)','.csv'))
+fmask_term <- 'curr_ptsd_dxPTSD:curr_ptsd_sev_harmon'
+
+DS_plots_ggseg(fname, fterm, fdf0_info)#, fmask, fmask_term)
+```
+
+
+## Brain map Plots: (6.2) curr_ptsd_dx by PTSD severity interaction
+## Post hoc: effect of PTSD severity in PTSD only
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+fname <- file.path('..','Results','DS','Stats', 
+                   paste0('Statistics_lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1_SITE), data=.)_posthoc_PTSD_only','.csv'))
+fterm <- 'curr_ptsd_sev_harmon'
+fdf0_info <- file.path('..', 'Data', 'Data_cleaned_info.csv')
+fmask <- file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx x curr_ptsd_sev_harmon + Age + Sex + (1_SITE), data=.)','.csv'))
+fmask_term <- 'curr_ptsd_dxPTSD:curr_ptsd_sev_harmon'
+
+DS_plots_ggseg(fname, fterm, fdf0_info)#, fmask, fmask_term)
+```
+
+## Supplementary Brain map Plots: (1) main effect of Age
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx + Age + Sex + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='Age', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'))
+
+```
+
+## Supplementary Brain map Plots: (2) main effect of Sex
+```{r, echo=FALSE}
+source("./DS/DS_plots_ggseg.R")
+
+file.path('..','Results','DS','Stats', 
+                     paste0('Statistics_lmer(y ~ curr_ptsd_dx + Age + Sex + (1_SITE), data=.)','.csv')) %>% 
+DS_plots_ggseg(fterm='SexFemale', 
+               fdf0_info = file.path('..', 'Data', 'Data_cleaned_info.csv'))
+
+```
+
+
+
+```{r,echo=FALSE}
+# representative variable(s)
+df1 <- df %>% filter(grepl('DFC_30_50_LAmyg', yname) & adj_p<0.05)
+if(dim(df1)[[1]] == 0){
+  # if no significance
+  print('No significant results!!!')
+} else {
+  # the variable name (column name) of max & min significant results
+  Vname_max <- df1 %>% select(statistic) %>% unlist() %>% which.max() %>% df1[., 'yname'] %>% .[[1]]
+  print(paste('Max =', Vname_max, ', T =', round(df1[yname==Vname_max, 'statistic'],3), ', adj_p =', round(df1[yname==Vname_max, 'adj_p'],3)))
+  Vname_min <- df1 %>% select(statistic) %>% unlist() %>% which.min() %>% df1[., 'yname'] %>% .[[1]]
+  print(paste('Min =', Vname_min, ', T =', round(df1[yname==Vname_min, 'statistic'],3), ', adj_p =', round(df1[yname==Vname_min, 'adj_p'],3)))
+}
+
+# lmer package
+pacman::p_load(lme4, lmerTest, sjPlot, ggpubr)
+
+    
+# model fitting
+df <- df0
+df$y <- df[,Vname_max] # add roi value as y value
+mtxt <- 'lmer(y ~ curr_ptsd_dx + Age + Sex + (1|SITE))'
+mtxt <- mtxt %>% gsub("[)]$", ", data=df)",.)
+MOD  <- eval(parse(text=mtxt)) # model estimation
+
+plt_max <- MOD %>% plot_model(type='pred', terms='curr_ptsd_dx', axis.title=c('',''), axis.lim = c(.3,.6)) + 
+  labs(title='Max') +
+  theme_minimal() + theme(axis.text=element_text(size=15), axis.title=element_text(size=15,face="bold"))# + scale_color_manual(values=c( "#56B4E9","#E69F00"))
+plt_max
+
+df$y <- df[,Vname_min] # add roi value as y value
+mtxt <- 'lmer(y ~ curr_ptsd_dx + Age + Sex + (1|SITE))'
+mtxt <- mtxt %>% gsub("[)]$", ", data=df)",.)
+MOD  <- eval(parse(text=mtxt)) # model estimation
+plt_min <- MOD %>% plot_model(type='pred', terms='curr_ptsd_dx', axis.title=c('',''), axis.lim = c(.4,.5)) + 
+  labs(title='Min') +
+  theme_minimal() + theme(axis.text=element_text(size=15), axis.title=element_text(size=15,face="bold"))# + scale_color_manual(values=c( "#56B4E9","#E69F00"))
+plt_min
+
+plt_effect <- ggarrange(plt_min, plt_max,font.label=list(size=20, face="bold"), common.legend=T)
+
+plt_effect
+
+
+
+
+fig <- ggseg(atlas=schaefer17_400, position='stacked', mapping = aes(fill = region))
+fig
+a <- fig$data
+fwrite(schaefer17_400, 'xxx.csv')
+a <- schaefer17_400
+```
+
+

@@ -1,0 +1,224 @@
+---
+title: "SDL_R_Clean"
+author: "Delin Sun"
+date: "2023-07-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Aims
+
+This R Markdown document aims at cleaning & organizing the data to meet the requirement of the DS package
+
+## Packages
+```{r, echo=FALSE}
+if (!require("pacman")) {
+  install.packages("pacman")
+} # make sure that pacman is installed
+
+pacman::p_load(tidyverse,    # data management
+               plyr,         # data manegement
+               data.table   # quick read & write files
+)
+```
+
+## Load raw data files
+Including:
+--- subjects' demographic & clinical info
+--- 4 seed-based dynamic rsFC (tw=30, tp=50) & static rsFC (tw=0, tp=100)
+--- cleaned data's info: numeric/categorical, domain, brain atlas
+
+## (1) subjects' demographic & clinical info
+```{r, echo=FALSE}
+# load SbjInfo_harmon.csv: harmonized clinical/behavioral info provided by Ahmed
+df <-
+  file.path('..', 'Data', 'delin_harmonized_w_exclusions.csv') %>% read_csv(na=c('#NULL!', 'NA')) %>%
+  distinct(fID, .keep_all = T) # all subjects' info (N=2841)
+
+# clean & transform variables of interest
+# Sex
+df$Sex <- df$Sex %>% 
+  as.factor() %>% 
+  plyr::revalue(c("0"="Male",  "1"="Female")) # according to the defination per SITE
+
+# Current PTSD diagnosis (curr_PTSD_dx)
+df$curr_ptsd_dx <- df$CurrentPTSDDiagnosis %>% 
+  as.factor() %>% 
+  plyr::revalue(c("0"="Control","1"="PTSD"))
+
+# remove subjects without clear curr_PTSD_dx, Age, or Sex info
+# Age & Sex in fact do not have missing values
+df <- df %>% 
+  filter(!is.na(curr_ptsd_dx) & !is.na(Age) & !is.na(Sex)) # (N=2841)
+
+# list all subjects' brain data files (one file per subject)
+fnames <- list.files(path=file.path('..','Results','ROI-to-ROI', 'sd_30_50'), all.files=F) %>% as.list() # only the folder names (i.e. fID), (N=2588)
+
+# remove very young subjects (mostly controls) to avoid between-group Age difference
+df <- df %>% 
+  dplyr::filter(!(curr_ptsd_dx=='Control' & Age<11.4)) # (N=2798)
+
+# merge SbjInfo.csv & brain data file list
+df0_demcli <- df[df$fID %in% fnames,] # (N=2545) for demographic & clinical info!!!
+```
+
+## (2) 4 seed-based dynamic rsFC (tw=30, tp=50) & sFC (tw=0, tp=100)
+```{r,echo=FALSE}
+# DFC filenames & prefix for re-organizations
+df_FC_info <-
+  tibble(
+    fpre = c(
+      'DFC_30_50_LAmyg',
+      'DFC_30_50_RAmyg',
+      'DFC_30_50_LHipp',
+      'DFC_30_50_RHipp',
+      'SFC_LAmyg',
+      'SFC_RAmyg',
+      'SFC_LHipp',
+      'SFC_RHipp'
+    ),
+    fname = c(
+      'sd_30_50_seed=FreeSurfer_Left.Amygdala',
+      'sd_30_50_seed=FreeSurfer_Right.Amygdala',
+      'sd_30_50_seed=FreeSurfer_Left.Hippocampus',
+      'sd_30_50_seed=FreeSurfer_Right.Hippocampus',
+      'sd_0_100_seed=FreeSurfer_Left.Amygdala',
+      'sd_0_100_seed=FreeSurfer_Right.Amygdala',
+      'sd_0_100_seed=FreeSurfer_Left.Hippocampus',
+      'sd_0_100_seed=FreeSurfer_Right.Hippocampus'
+    )
+  )
+
+# function to load brain data & change column names & merge
+# Input
+# --- df_FC_info, dataframe of data filenames and prefix
+# --- df0_demcli, dataframe of demographic & clinical info
+# --- fdir, the path to the directory of data file
+# Output
+# --- a dataframe with merged data (row:subject, col:seed-to-region DFC/SFC)
+SDL_Merge <-function(df_FC_info, df0_demcli, fdir){
+  # use the column of fID to start merging data (also limit the range of subjects)
+  df1 <- df0_demcli['fID']
+  for (i in seq(dim(df_FC_info)[[1]])){
+    # fullname of the data file
+    fin  <- fdir %>% file.path(paste0(df_FC_info$fname[[i]], '.csv'))
+    # read data file
+    df <- fread(fin) # (2588 x 418)
+    # add prefix to columns except the last column (i.e. fID)
+    colnames(df)[-ncol(df)] <- paste0(df_FC_info$fpre[[i]], '_', colnames(df)[-ncol(df)])
+    df1 <- df1 %>% merge(df, by='fID')
+  }
+  
+  # fID as the rownames & remove the column of fID
+  df <- df1
+  rownames(df) <- df[,1] # fID as rownames
+  df[,1] <- NULL # remove the column of fID
+  
+  # remove rows with only NA or 0
+  df <- df[rowSums(df != 0, na.rm=TRUE) > 0,] # (2537 x 3336)
+  
+  # add fID as a column
+  df$fID <- rownames(df)
+  
+ # merge demographic/clinical info and brain data
+  df0_demcli %>% merge(df, by='fID') %>% 
+    return()
+}
+
+# directory
+fdir <- file.path('..', 'Results', 'ROI-to-ROI')
+
+# run function
+df0 <- SDL_Merge(df_FC_info, df0_demcli, fdir) # (2537 x 3370)
+
+# save data
+fout <- file.path('..', 'Data', 'Data_cleaned.csv')
+df0 %>% fwrite(fout)
+
+```
+
+## (3) information of cleaned data
+-- numeric, categorical
+-- domain: demographic, clinical, DFC, SFC
+-- brain atlas
+```{r,echo=FALSE}
+# list all variable names
+df <- tibble(VarName = colnames(df0),
+             VarClass = NA)
+
+## Set class: numeric or categorical, or BAD!!! (all NA or constants that could not be analyzed)
+df$VarClass <- apply(df0, 2, function(x)
+  ifelse(length(unique(x)) > 5,
+         'numeric',
+         'Categorical')) # categorical variables if No. of unique values > 5
+
+df[df$VarName %in% c('SITE'), 'VarClass'] = 'Categorical' # adjust some variables
+
+## Set domain 1: GROUP, demographic, clinical, DFC, SFC
+df[df$VarName %in% c('curr_ptsd_dx'), 'VarDomain1'] = 'GROUP'
+df[df$VarName %in% c('Age', 'Sex', 'curr_ptsd_sev_harmon', 'child_trauma_sev_harmon', 'life_adult_trauma_sev_harmon', 'depression_sev_harmon'), 'VarDomain1'] = 'Demographic and clinical'
+
+name_brain_data <- df0 %>% select(starts_with(c('DFC_'))) %>% colnames()
+df[df$VarName %in% name_brain_data, 'VarDomain1'] = 'DFC'
+
+name_brain_data <- df0 %>% select(starts_with(c('SFC_'))) %>% colnames()
+df[df$VarName %in% name_brain_data, 'VarDomain1'] = 'SFC'
+
+# # Set domain 2: DFC_LAmyg, DFC_RAmyg, DFC_LHipp, DFC_RHipp, SFC_LAmyg, SFC_RAmyg, SFC_LHipp, SFC_RHipp
+# name_brain_data <- df0 %>% select(starts_with("DFC_30_50_LAmyg_")) %>% colnames()
+# df[df$VarName %in% name_brain_data, "VarDomain1"] = "DFC"
+
+## Set atlas (brain atlas: Schaefer17_400 & FreeSurfer subcortical 17)
+fatlas <- 'Brain_Atlas_Schaefer400_FreeSurfer17.csv'
+df_atlas <- file.path('..', 'Data', fatlas) %>% fread() # load brain atlas
+
+# function to remove multiple prefix from column names
+# Input
+# --- df0, dataframe of all cleaned data
+# --- df_FC_info, dataframe of prefix to be removed
+SDL_noprefix <- function(df0, df_FC_info){
+  names_df <- df0 %>% colnames()
+  for (i in seq(dim(df_FC_info)[[1]])){
+    names_df <- names_df %>% str_replace(paste0(df_FC_info$fpre[[i]],'_'), '')
+  }
+  return(names_df)
+}
+# extract data file colnames (after removing prefix) to match the atlas
+names_df <- df0 %>% SDL_noprefix(df_FC_info)
+
+# index of colnames that match the atlas
+idx <- match(names_df, df_atlas$ROI_Data)
+df$Atlas_Source <- NA
+df$Atlas_Source[!is.na(idx)] <- fatlas # atlas source file name
+df$Atlas_Label  <- df_atlas$Label_ggseg[idx] # atlas label
+df$Atlas_Region <- df_atlas$region_ggseg[idx]# atlas region (or 17 network name)
+# coordinates
+df$Atlas_R      <- df_atlas$R[idx]
+df$Atlas_A      <- df_atlas$A[idx]
+df$Atlas_S      <- df_atlas$S[idx]
+
+
+# save data
+fout <- file.path('..', 'Data', 'Data_cleaned_info.csv')
+df %>% fwrite(fout)
+```
+
+
+```{r,echo=FALSE}
+# library(ggseg)
+# plot(aseg)
+# a <- aseg$data %>% select(c("label", "region"))
+# 
+# library(ggsegSchaefer)
+# a <- tibble(label=brain_labels(schaefer17_400)) 
+# a %>% fwrite('xxx.csv')
+# b <- tibble(region=brain_regions(schaefer17_400))
+# b %>% fwrite('xxx.csv')
+# ggplot() +  geom_brain(atlas = schaefer17_400, 
+#                        position = position_brain(hemi ~ side),
+#                        show.legend = FALSE)
+```
+
