@@ -1,0 +1,142 @@
+---
+title: "SDL_R_raw"
+author: "Delin Sun"
+date: "2023-09-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Aims
+
+Copy the raw data (atlas-based time series & confounds) from BIAC server, and paste them into local PC for analyses.
+
+## Packages
+```{r, echo=FALSE}
+if (!require("pacman")) {
+  install.packages("pacman")
+} # make sure that pacman is installed
+
+pacman::p_load(tidyverse,    # data management
+               data.table   # quick read & write files
+)
+```
+
+## Function to copy & paste files (timeseries & confounding)
+```{r,echo=FALSE}
+# Input
+# --- fdir_i, path for the input files (genral folder path that may contain subfolders)
+# --- fdir_o, path for the output files
+# --- fpattern, the pattern of part of the filenames, e.g. 'task-rest_desc-confounds_timeseries.tsv'
+SDL_cp <- function(fdir_i, fdir_o, fpattern){
+# make directory of destination if not existed
+if (!dir.exists(fdir_o)) {dir.create(fdir_o)}
+
+# list all files of interest
+fins <-  fdir_i %>% list.files(pattern = fpattern,
+                        full.names = TRUE,
+                        recursive = TRUE) # file fullname
+
+# Copy each file to the destination folder
+i <- 0
+N <- length(fins) # total number of input files
+for(fin in fins) {
+  # segments of the full path of a file
+  fseg <- fin %>% strsplit(split = "/") %>% .[[1]]
+  len_fseg <- length(fseg) # length of the file segments
+  
+  # site name
+  fsite <- fseg[[len_fseg - 2]] 
+  if(fsite == "Capetown"){
+    fsite = "Cape Town"
+  } else if (fsite == "Duke_data" | fsite == "re_Duke_data"){
+    fsite = "Duke"
+  } else if (fsite == "MinnVA"){
+    fsite = "Minneapolis VA - Disner"
+  } else if (fsite == "NanjingYixing_data"){
+    fsite = "Nanjing"
+  } else if (fsite == "UWash"){
+    fsite = "U Wash"
+  } else if (fsite == "Utrecht"){
+    fsite = "Utrecht - BETER"
+  } else if (fsite == "Cisler"){
+    fsite = "UW Madison"
+  } else if (fsite == "Gordon"){
+    fsite = "Waco VA - Gordon"
+  } else if (fsite == "WestHaven"){
+    fsite = "West Haven"
+  } else if (fsite == "Lawson"){
+    fsite = "Western Ontario - Lawson"
+  } else {}
+  
+  # file name (lower case)
+  # some subjects are different in lower & upper case, e.g. Ghent_sub-s01 in ts, and Ghent_sub-S01 in confounds
+  fname <- fseg[[len_fseg]] %>% tolower() 
+  
+  fout <-
+    file.path(fdir_o, paste0(fsite, '_', fname)) # fullname of target file
+  
+  # copy & paste
+  file.copy(fin, fout, overwrite = T, copy.date = T)
+  
+  # print info
+  i <- i + 1
+  print(paste('i =', i, 'of',N))
+  print(paste('From:', fin))
+  print(paste('To:', fout))
+}
+print('###############  Completed: Copy & Paste  ##############')
+}
+```
+
+## copy & paste timeseries files
+```{r,echo=FALSE}
+# path of original data (input)
+fdir_i <- file.path('Z:','Data','Lab','PGC','resting_state','beta6_PipelineOutput','atlas_connectivity')
+# path of destination (output)
+fdir_o <- file.path('..','Data','ts')
+# pattern of filenames
+fpattern <- 'task-rest_feature-corrMatrix_atlas-schaefer2011Combined_timeseries.tsv'
+
+SDL_cp(fdir_i, fdir_o, fpattern)
+```
+
+## copy & paste confounding files
+```{r,echo=FALSE}
+# path of original data (input)
+fdir_i <- file.path('Z:','Data','Lab','PGC','resting_state','beta6_PipelineOutput','confounds')
+# path of destination (output)
+fdir_o <- file.path('..','Data','confounds')
+# pattern of filenames
+fpattern <- 'task-rest_desc-confounds_timeseries.tsv'
+
+SDL_cp(fdir_i, fdir_o, fpattern)
+```
+
+
+## Merge subjects' info from doc, timeseries, & confounds
+```{r, echo=FALSE}
+# load SbjInfo_harmon.csv: harmonized clinical/behavioral info provided by Ahmed
+df_doc <-
+  file.path('..', 'Data', 'delin_harmonized_updated_final.csv') %>% read_csv(na=c('#NULL!', 'NA')) %>% distinct(fID, .keep_all = T)# %>% mutate(fID=paste0(SITE,'_',tolower(ImgID)))
+# all subjects' info (N=2841)
+
+# load timeseries
+df_ts <-  file.path('..','Data','ts') %>% list.files() %>% str_remove('_task-rest_feature-corrmatrix_atlas-schaefer2011combined_timeseries.tsv') %>% as.data.frame() # (N=2724)
+colnames(df_ts) <- "fID"
+
+# load confounds
+df_confounds <-  file.path('..','Data','confounds') %>% list.files() %>% str_remove('_task-rest_desc-confounds_timeseries.tsv') %>% as.data.frame() # (N=2633)
+colnames(df_confounds) <- "fID"
+
+# Merge df_doc & df_ts
+df <- df_ts %>% merge(df_confounds, by="fID")
+df1 <- df_doc %>% merge(df, by="fID")
+
+# subjects with ts & confounds but not in doc
+setdiff(df$fID, df_doc$fID) %>% as.data.frame() %>% fwrite("missing subjects.csv")
+```
+
+
