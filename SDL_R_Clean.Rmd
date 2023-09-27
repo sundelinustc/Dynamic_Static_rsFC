@@ -35,8 +35,8 @@ Including:
 ```{r, echo=FALSE}
 # load SbjInfo_harmon.csv: harmonized clinical/behavioral info provided by Ahmed
 df <-
-  file.path('..', 'Data', 'delin_harmonized_w_exclusions.csv') %>% read_csv(na=c('#NULL!', 'NA')) %>%
-  distinct(fID, .keep_all = T) # all subjects' info (N=2841)
+  file.path('..', 'Data', 'delin_harmonized_updated_final.csv') %>% fread(na.strings=c('#NULL!', 'NA')) %>%
+  distinct(fID, .keep_all = T) # all subjects' info (N=2931)
 
 # clean & transform variables of interest
 # Sex
@@ -49,20 +49,70 @@ df$curr_ptsd_dx <- df$CurrentPTSDDiagnosis %>%
   as.factor() %>% 
   plyr::revalue(c("0"="Control","1"="PTSD"))
 
-# remove subjects without clear curr_PTSD_dx, Age, or Sex info
+# remove subjects without clear curr_PTSD_dx, Age, Sex, or SITE info
 # Age & Sex in fact do not have missing values
 df <- df %>% 
-  filter(!is.na(curr_ptsd_dx) & !is.na(Age) & !is.na(Sex)) # (N=2841)
+  filter(!is.na(curr_ptsd_dx) & !is.na(Age) & !is.na(Sex) & !is.na(SITE)) # (N=2931)
 
 # list all subjects' brain data files (one file per subject)
-fnames <- list.files(path=file.path('..','Results','ROI-to-ROI', 'sd_30_50'), all.files=F) %>% as.list() # only the folder names (i.e. fID), (N=2588)
+fnames <- list.files(path=file.path('..','Processes','FC_Matrix'), pattern="30_50") %>% as.list() # only the folder names (i.e. fID), (N=2244)
 
-# remove very young subjects (mostly controls) to avoid between-group Age difference
-df <- df %>% 
-  dplyr::filter(!(curr_ptsd_dx=='Control' & Age<11.4)) # (N=2798)
+# # remove very young subjects (mostly controls) to avoid between-group Age difference
+# df <- df %>% 
+#   dplyr::filter(!(curr_ptsd_dx=='Control' & Age<11.4)) # (N=2798)
+
+# fullnames of a type of data files (e.g. "AMC_sub-1132_FC_30_50.csv")
+df <- df %>% mutate(sig_fullname = paste0(fID,"_FC_30_50.csv")) # (N=2931)
 
 # merge SbjInfo.csv & brain data file list
-df0_demcli <- df[df$fID %in% fnames,] # (N=2545) for demographic & clinical info!!!
+df0_demcli <- df[df$sig_fullname %in% fnames,] # (N=2244) for demographic & clinical info!!!
+```
+
+
+## Extract the seed-based DFC (tw=30, tp=50) & sFC (tw=0, tp=100)
+```{r,echo=FALSE}
+# parameters
+# SFC (0,100) & DFC (different window width & overlaps in %)
+fdtype <- c("FC_0_100", "FC_30_50", "FC_30_25", "FC_30_75", "FC_20_50", "FC_40_50")
+# 4 seeds
+fseed  <- c("Left-Amygdala","Right-Amygdala","Left-Hippocampus","Right-Hippocampus")
+# roi info
+froi   <- file.path('..','Data','Brain_Atlas_Schaefer400_FreeSurfer17.csv') %>% 
+  fread() %>% .$Label_ggseg
+# N_sbj
+N_sbj <- df0_demcli %>% dim() %>% .[[1]]
+# N_var (number of variables)
+N_var <- length(fdtype) * length(fseed) * length(froi)
+
+
+# a big matrix to contain the data
+M <- matrix(NA, nrow=N_sbj, ncol=N_var)
+# names of the columns
+# concatenate data type & seed first, e.g. "FC_30_50_Left-Hippocampus"
+Mnames <- outer(fdtype, fseed, function(x,y) paste(x,y,sep="_")) %>% t() %>% c()
+# concatenate data type, seed, & target, e.g. "FC_0_100_Left-Hippocampus_to_lh_17Networks_LH_ContA_PFCl_3"
+Mnames <- outer(Mnames, froi, function(x,y) paste(x,y,sep="_to_")) %>% t() %>% c()
+
+
+
+
+
+# list files of this subject
+fn <- file.path('..','Processes','FC_Matrix') %>% list.files(pattern=df0_demcli$fID[[1]])
+
+# get one data file for an example
+M <- file.path('..','Processes',"FC_Matrix",df0_demcli$sig_fullname[[1]]) %>% 
+  fread()
+colnames(M) <- df_roi$Label_ggseg
+rownames(M) <- df_roi$Label_ggseg
+
+# only the values related to the seeds of interest
+a <- M %>% select(fseed)
+# 
+col_row_names <- outer(colnames(a), rownames(a), function(x,y) paste(x,y,sep="_")) %>% t() %>% c()
+
+b <- a %>% as.matrix() %>% c()
+
 ```
 
 ## (2) 4 seed-based dynamic rsFC (tw=30, tp=50) & sFC (tw=0, tp=100)

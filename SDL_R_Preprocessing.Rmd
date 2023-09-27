@@ -1,0 +1,274 @@
+---
+title: "SDL_R_Preprocessing"
+output: html_document
+date: "2023-09-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Aims
+
+The ENIGMA PGC PTSD resting-state functional magnetic resonance imaging (rs-fMRI) have been preprocessed by Courtney Haswell. Here, we need to do some extra preprocessing steps to
+--- (1) summarize the head motions (framewise displacement) under different thresholds to test case-control differences.
+--- (2) remove linear trends, and regress out the effects of white matter and CSF from time series.
+--- (3) make static and dynamic rsFC datasets using the atlas-based timeseries
+
+## Packages
+```{r, echo=FALSE}
+if (!require("pacman")) {
+  install.packages("pacman")
+} # make sure that pacman is installed
+
+pacman::p_load(tidyverse,    # data management
+               data.table,   # quick read & write files
+               foreach,      # parallel processing
+               doParallel,   # parallel processing
+               GGally,       # ggpairs plots
+               pracma       # detrend data
+)
+```
+
+## Copy from Duke BIAC server the files of timeseries & confounds
+```{r,echo=FALSE}
+source("./DS/DS_copy.R")
+
+# copy & paste timeseries files
+fdir_in  <- "/Volumes/dusom_morey/Data/Lab/new_halfpipe/Outputs/atlas_conn"
+fdir_out <- "../Data/BIAC_Server"
+fstrings <- "_task-rest_feature-corrMatrix_atlas-schaefer2011Combined_timeseries.tsv"
+system.time({
+  DS_copy(fdir_in, fdir_out, fstrings)
+})
+
+
+# copy & paste confounds files
+fdir_in  <- "/Volumes/dusom_morey/Data/Lab/new_halfpipe/Outputs/confounds"
+fdir_out <- "../Data/BIAC_Server"
+fstrings <- "-confounds_timeseries.tsv"
+system.time({
+  DS_copy(fdir_in, fdir_out, fstrings)
+})
+```
+
+
+## Data from doc, ts, & confounds
+```{r,echo=False}
+## Info from SbjInfo_harmon.csv: harmonized clinical/behavioral info provided by Ahmed
+df_doc <-
+  file.path('..', 'Data', 'delin_harmonized_updated_final.csv') %>% fread(na.strings=c('#NULL!', 'NA')) %>% distinct(fID, .keep_all = T) # all subjects' info (N=2931)
+
+## Info of signals (timeseries, or ts)
+# Note: each subject has his/her own folder
+# pattern of the filenames of timeseries
+fpatt <- "_task-rest_feature-corrMatrix_atlas-schaefer2011Combined_timeseries.tsv"
+# fullnames of all files of interest
+fn <-  file.path('..','Data','BIAC_Server') %>% 
+  list.files(pattern=fpatt, recursive=T, full.names=T) 
+# all segments of the filenames
+df_ts <- fn %>% 
+  strsplit(split = .Platform$file.sep) %>% 
+  as.data.frame() %>% t() %>% as.data.frame() %>% 
+  mutate(fID=paste0(V11,"_",V12), sig_fullname=fn)
+# remove rownames for aesthetic purpose
+rownames(df_ts) <- NULL
+# just select fID and fullname
+df_ts <- df_ts %>% select(c("fID","sig_fullname")) # (N=2413)
+
+
+## Info of confounds
+# Note: all subjects are put together (no individual folder) per SITE
+# pattern of the filenames of confounds
+fpatt <- "-confounds_timeseries.tsv"
+# fullnames of all files of interest
+fn <-  file.path('..','Data','BIAC_Server') %>% 
+  list.files(pattern=fpatt, recursive=T, full.names=T) 
+# all segments of the filenames
+df_conf <- fn %>% 
+  strsplit(split = .Platform$file.sep) %>% 
+  as.data.frame() %>% t() %>% as.data.frame() %>% 
+  mutate(fID=paste0(V11,"_", gsub(fpatt,"",V12)), noise_fullname=fn)
+# remove rownames for aesthetic purpose
+rownames(df_conf) <- NULL
+# just select fID and fullname
+df_conf <- df_conf %>% select(c("fID","noise_fullname")) # (N=2468)
+
+# Merge df_ts & df_conf
+df1 <- df_ts %>% merge(df_conf, by="fID") # (N=2413)
+
+# find the rows in df_doc but not in ts data
+a <- setdiff(df_doc$fID, df1$fID) # (N=687)
+# find the rows in ts data but not in df_doc
+b <- setdiff(df1$fID, df_doc$fID) # (N=169)
+
+# # load Duke_data_supp
+# df2 <- file.path('..', 'Data', 'Duke_data_supp.csv') %>% read_csv(na=c('#NULL!', 'NA')) %>% distinct(fID, .keep_all = T)
+# 
+# # find the data in ts data, not in df_doc, but in Duke_supp
+# data.frame(fID=b) %>% merge(df2,by='fID') %>% drop_na() %>% fwrite('Duke_supp.csv')
+
+# Merge df_doc, df_ts, & df_confounds
+df0 <- df_doc %>% merge(df1, by="fID") # (N=2244)
+```
+
+## Aim 1: Summarize head motions (framewise displacement)
+```{r,echo=FALSE}
+# function to calculate the frequency of a variable beyond threshold
+# Input
+# --- x, a vector (or a dataframe column) of numeric values
+# --- thr, the threshold value
+# Output
+# --- the frequency (in %) of variable x above the threshold thr
+SDL_freq <- function(x,thr){
+  return(sum(x>thr, na.rm=T)*100/length(x))
+}
+
+# thresholds for framewise displacement
+thrs <- c(0.1, 0.2, 0.3, 0.4, 0.5)
+thrs_name <- paste0("thr_",thrs)
+
+# matrix to contain the No. of FD above thresholds
+M_DF <- matrix(NA, nrow=dim(df0)[1], ncol=length(thrs))
+
+# Calculate the frequencies of FD above thresholds per subject
+for (i in seq(dim(df0)[1])) {
+  # confounds (No. time points x No. confounding variables)
+  df_con <- df0$noise_fullname[[i]] %>% 
+    fread(na.strings = c("n/a")) %>% 
+    select(c("csf", "white_matter", "framewise_displacement", "global_signal"))
+  
+  # 1st FD is NA, change to 0 for lm models
+  df_con$framewise_displacement[[1]] <- 0
+  
+  # calculate the frequencies of FD above thresholds
+  freq_FD <- thrs %>%
+    sapply(SDL_freq, x = df_con$framewise_displacement)
+  
+  # fill in the matrix
+  M_DF[i, ] <- freq_FD
+}
+
+# bind with df0
+M_DF <- M_DF %>% as.data.frame()
+colnames(M_DF) <- thrs_name
+df0 <- df0 %>% cbind(M_DF)
+
+# PTSD-Control differences
+source("./DS/DS_table1.R")
+
+df <- df0
+fmodel <- "~ thr_0.1 + thr_0.2 + thr_0.3 + thr_0.4 + thr_0.5 | CurrentPTSDDiagnosis"
+
+# Create Table1 Object, convert to flextable, and change font
+tbl1 <- df %>% 
+  DS_table1(fmodel) %>% 
+  t1flex() 
+
+tbl1 <- tbl1%>%  
+  bold(part="header") %>%  
+  italic(j = which("Statistics"==(tbl1 %>% .$header %>% .$dataset %>% colnames()))) # make the column of statistics into italic
+
+tbl1
+
+# Save table into a Word document
+tbl1 %>% save_as_docx(path=file.path("..","Results","Framewise_displacement.docx"))
+
+```
+
+## An example of the correlations between signals and confounds
+```{r,echo=FALSE}
+i<-1 # ith subject for example
+
+# signals
+df_sig <- df0$sig_fullname[[i]] %>% 
+  fread()
+
+# confounds
+df_con <-
+    df0$noise_fullname[[i]] %>% 
+    fread(na.strings = c("n/a")) %>% 
+    select(c("csf", "white_matter", "framewise_displacement", "global_signal"))
+
+# 1st FD is NA, change to 0 for lm models
+df_con$framewise_displacement[[1]] <- 0
+  
+# combine signals and confounds for regression
+df_sig <- df_sig %>% cbind(df_con)
+
+# Function to return points and geom_smooth
+# allow for the method to be changed
+my_fn <- function(data, mapping, method="lm", ...){
+      p <- ggplot(data = data, mapping = mapping) + 
+        geom_point(size=0.6) + 
+        geom_smooth(method=method, ...)
+      p
+}
+
+df <- df_sig %>% select(c("V1","csf", "white_matter", "framewise_displacement", "global_signal")) 
+
+# ggpais plots    
+df %>% ggpairs(lower = list(continuous = my_fn))
+
+# regression (without global_signal)
+V1_corrected_noGlobal <- lm(V1 ~ csf + white_matter + framewise_displacement, data=df_sig) %>% residuals() + mean(df_sig$V1, na.rm=T)
+plot(df_sig$V1, V1_corrected_noGlobal)
+
+# regression (with global_signal)
+V1_corrected_Global <- lm(V1 ~ csf + white_matter + framewise_displacement + global_signal, data=df_sig) %>% residuals() + mean(df_sig$V1, na.rm=T)
+plot(df_sig$V1, V1_corrected_Global)
+```
+
+
+## Aim 2: Regress out confounds (csf, white_matter, framewise_displacement, and maybe global_signal) from timeseries
+```{r,echo=FALSE}
+source("./DS/DS_denoise.R")
+df       <- df0
+fdetrend <- "linear"
+fcons    <- c("csf","white_matter","framewise_displacement")
+fdir_o   <- file.path('..','Processes','ts_corrected_detrend_csf_wm_FD')
+DS_denoise(df, fdetrend, fcons, fdir_o)
+
+```
+
+
+## Aim 3: Static and Dynamic rsFC calculation
+```{r,echo=FALSE}
+source("./DS/DS_net_FC_para.R")
+
+# # denoised data
+# df <- df0 %>% mutate(sig_fullname=file.path('..','Processes','ts_corrected_detrend_csf_wm_FD',paste0(fID,"_signal_denoised.csv")))
+# idx <- NULL
+# # output to denoised directory
+# fdir_o <- file.path('..', 'Processes','FC_corrected_detrend_csf_wm_FD')
+
+## change signal file names for data analyses
+# make the output directory
+df <- df0
+fdir_o <- file.path('..', 'Processes','ts')
+dir.create(fdir_o)
+# copy signal files to the 
+print("Copying files!!! Please be patient...")
+for(i in seq(dim(df)[1])){
+  file.copy(df$sig_fullname[[i]], 
+            file.path(fdir_o, paste0(df$fID[[i]],".tsv"))
+            )
+}
+print("Completed! Copy files. Please double check the files.")
+
+# parameters
+df <- df0 %>% mutate(sig_fullname=file.path('..','Processes','ts',paste0(fID,".tsv")))
+idx <- NULL
+fdir_o <- file.path('..', 'Processes','FC_Matrix')
+  
+# SFC 
+DS_net_FC_para(df, 0, 100, idx, fdir_o) # (win_len=0, win_overlap=100)
+
+# DFC 
+DS_net_FC_para(df, 30, 50, idx, fdir_o) # (win_len=30, win_overlap=50)
+DS_net_FC_para(df, 30, 25, idx, fdir_o) 
+DS_net_FC_para(df, 30, 75, idx, fdir_o) 
+DS_net_FC_para(df, 20, 50, idx, fdir_o) 
+DS_net_FC_para(df, 40, 50, idx, fdir_o) 
+
+```
