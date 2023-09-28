@@ -79,39 +79,78 @@ fseed  <- c("Left-Amygdala","Right-Amygdala","Left-Hippocampus","Right-Hippocamp
 # roi info
 froi   <- file.path('..','Data','Brain_Atlas_Schaefer400_FreeSurfer17.csv') %>% 
   fread() %>% .$Label_ggseg
+# index of seeds in rois
+idx <- fseed %>% sapply(function(x) which(froi %in% x)) # 407, 415, 406, 414
+
 # N_sbj
 N_sbj <- df0_demcli %>% dim() %>% .[[1]]
 # N_var (number of variables)
 N_var <- length(fdtype) * length(fseed) * length(froi)
-
-
 # a big matrix to contain the data
 M <- matrix(NA, nrow=N_sbj, ncol=N_var)
+
+
 # names of the columns
-# concatenate data type & seed first, e.g. "FC_30_50_Left-Hippocampus"
+# concatenate data type & seed, e.g. "FC_30_50_Left-Hippocampus"
 Mnames <- outer(fdtype, fseed, function(x,y) paste(x,y,sep="_")) %>% t() %>% c()
 # concatenate data type, seed, & target, e.g. "FC_0_100_Left-Hippocampus_to_lh_17Networks_LH_ContA_PFCl_3"
 Mnames <- outer(Mnames, froi, function(x,y) paste(x,y,sep="_to_")) %>% t() %>% c()
 
+# matrix of data file names (row=subject, column=individual file type)
+# concatenate path & fID, e.g., "../Processes/FC_Matrix/AMC_sub-1132"
+Mfn <- outer(file.path('..','Processes','FC_Matrix'), df0_demcli$fID,
+             function(x,y) file.path(x,y)) %>% c() 
+# concatenate data type & file extension, e.g., "FC_0_100.csv"
+Mfn1 <- outer(fdtype, '.csv', function(x,y) paste(x,y,sep="")) %>% c()
+# concatenate path, fID, data type, & file extension, e.g., "../Processes/FC_Matrix/AMC_sub-1132_FC_0_100.csv"
+Mfn <- outer(Mfn, Mfn1, function(x,y) paste(x,y,sep="_")) 
 
+# function to extract data from indexed columns in a given file
+# Input
+# -- fn, fullname of the data file
+# -- idx, index of the specific columns
+# Output
+# -- a vector of the extracted values
+myfun_extract <- function(fn, idx){
+  return(
+    fn %>% fread(select=as.vector(idx)) %>% as.matrix() %>% c()
+  )
+}
 
+# function to concatenate values of the same row into a vector
+# Input
+# -- irow, the row index
+# -- M, the matrix made by the previous function
+# Output
+# -- a vector of values of the same row
+myfun_cat <- function(irow, M){
+  return(M[,irow,] %>% c())
+}
 
+# extract data from indexed columns across datatype (cols) & subjects (rows)
+system.time({
+  print("Loading data!!! May be time consuming depending on the data size...")
+  M <- Mfn %>% apply(c(1,2), myfun_extract, idx) 
+  # No. data points per file x No. subjects x No. data type
+  print("Completed! Data loaded!")
+})
 
-# list files of this subject
-fn <- file.path('..','Processes','FC_Matrix') %>% list.files(pattern=df0_demcli$fID[[1]])
+# concatenate the data of the same subject into a row in the matrix
+system.time({
+  print("Concatenating data per subject!!!")
+  M1 <- seq(dim(M)[2]) %>% sapply(myfun_cat, M) %>% t() %>% as.data.frame()
+  colnames(M1) <- Mnames
+  print("Completed!!! Data concatenation.")
+})
 
-# get one data file for an example
-M <- file.path('..','Processes',"FC_Matrix",df0_demcli$sig_fullname[[1]]) %>% 
-  fread()
-colnames(M) <- df_roi$Label_ggseg
-rownames(M) <- df_roi$Label_ggseg
+# the merged demographic, clinical, & imaging data
+df0 <- cbind(df0_demcli, M1) # (2244x10452)
 
-# only the values related to the seeds of interest
-a <- M %>% select(fseed)
-# 
-col_row_names <- outer(colnames(a), rownames(a), function(x,y) paste(x,y,sep="_")) %>% t() %>% c()
+# save data
+system.time({
+  df0 %>% fwrite(file.path("..","Processes","Data_cleaned.csv"))
+})
 
-b <- a %>% as.matrix() %>% c()
 
 ```
 
