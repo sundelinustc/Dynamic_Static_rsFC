@@ -25,6 +25,14 @@ pacman::p_load(tidyverse,    # data management
                ggseg,        # atlas-based brain maps, cortical / subcortical (e.g. aseg)
                ggsegSchaefer # Schaefer's atlas, e.g. schaefer17_400
 )
+
+# Enable this universe
+options(repos = c(
+    ggseg = 'https://ggseg.r-universe.dev',
+    CRAN = 'https://cloud.r-project.org'))
+
+# Install some packages
+install.packages('ggseg')
 ```
 
 ### Authors' info
@@ -86,28 +94,28 @@ ggseg(
 ```{r,echo=FALSE}
 # load SbjInfo.csv
 df <-
-  file.path('..', 'Data', 'delin_harmonized_w_exclusions.csv') %>% read_csv(na=c('#NULL!', 'NA')) %>%
+  file.path('..', 'Data', 'delin_harmonized_updated_final.csv') %>% fread(na.strings=c('#NULL!', 'NA')) %>%
   distinct(fID, .keep_all = T) # all subjects' info (N=2841)
 
 # load rois' info
-df_roi <- read_excel(file.path('..','Data','network lsit.xlsx'), sheet="Sheet2") %>% dplyr::select(Label_Yeo:S) # (Yeo's 17 cortical networks & subcortical regions) including label, name, x/y/z coordinates
-
+froi   <- file.path('..','Data','Brain_Atlas_Schaefer400_FreeSurfer17.csv') %>% 
+  fread() %>% .$Label_ggseg # (Yeo's 17 cortical networks & subcortical regions)
 ## Calculate SD or corr. coef. per subject
-fID1 <- df_sbj$fID[[1]]
+fID1 <- df$fID[[1]]
 # load time series data
-fin <- file.path('..','Data','ts',fID1) %>% list.files(pattern='.tsv', full.names=TRUE, recursive=TRUE) # file fullname
-df <- fin %>% read.table(sep = '\t', header = F) # time series: TRs x ROIs
-colnames(df) <- df_roi$ROI_Yeo # assign roi names
+df <- file.path('..','Processes','ts',paste0(fID1,".tsv")) %>% 
+  fread() # time series: TRs x ROIs
+colnames(df) <- froi # assign roi names
 df$TRs <- 1:nrow(df)
 
 # Normalization the BOLD signals
-a <- df[c("FreeSurfer_Left-Amygdala","17Networks_LH_ContA_Cingm_1")] %>% sapply(function(x) (x-min(x))/(max(x)-min(x)))
+sig <- df %>% select(c("Left-Amygdala","lh_17Networks_LH_ContA_Cingm_1")) %>% sapply(function(x) (x-min(x))/(max(x)-min(x)))
 
 # dataframe for plotting
 df1 <- data.frame(
   Time=df$TR * 3,
-  L_Amyg=a[,1],
-  ACC=a[,2]
+  L_Amyg=sig[,1],
+  ACC=sig[,2]
 )
 
 # ggplot2
@@ -121,7 +129,7 @@ df2 %>% ggplot(aes(x=Time, y=BOLD, color=Regions)) + geom_line(linewidth=1) + ge
 source("./DS/DS_table1.R")
 
 # load cleaned data & cleaned data info
-df0      <- file.path('..', 'Data', 'Data_cleaned.csv') %>% fread() %>% as.data.frame()
+df0      <- file.path('..', 'Processes', 'Data_cleaned.csv') %>% fread() %>% as.data.frame()
 
 df <- df0
 fmodel <- "~ Age  + Sex + curr_ptsd_sev_harmon + child_trauma_sev_harmon + depression_sev_harmon | curr_ptsd_dx"
