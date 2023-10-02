@@ -1,0 +1,18 @@
+﻿Model,Filter
+lmer(y ~ curr_ptsd_dx + Age + Sex + (1|SITE)),
+lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1|SITE)),
+lmer(y ~ curr_ptsd_dx * Age + Sex + (1|SITE)),
+lmer(y ~ Age + Sex + (1|SITE)),filter(curr_ptsd_dx=='Control')
+lmer(y ~ Age + Sex + (1|SITE)),filter(curr_ptsd_dx=='PTSD')
+lmer(y ~ curr_ptsd_dx * Sex + Age + (1|SITE)),
+lmer(y ~ Sex + Age + (1|SITE)),filter(curr_ptsd_dx=='Control')
+lmer(y ~ Sex + Age + (1|SITE)),filter(curr_ptsd_dx=='PTSD')
+lmer(y ~ curr_ptsd_dx * depression_sev_harmon  + Age + Sex + (1|SITE)),
+lmer(y ~ depression_sev_harmon  + Age + Sex + (1|SITE)),filter(curr_ptsd_dx=='Control')
+lmer(y ~ depression_sev_harmon  + Age + Sex + (1|SITE)),filter(curr_ptsd_dx=='PTSD')
+lmer(y ~ curr_ptsd_dx * child_trauma_sev_harmon + Age + Sex + (1|SITE)),
+lmer(y ~ child_trauma_sev_harmon + Age + Sex + (1|SITE)),filter(curr_ptsd_dx=='Control')
+lmer(y ~ child_trauma_sev_harmon + Age + Sex + (1|SITE)),filter(curr_ptsd_dx=='PTSD')
+lmer(y ~ curr_ptsd_dx * curr_ptsd_sev_harmon + Age + Sex + (1|SITE)),
+lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1|SITE)),filter(curr_ptsd_dx=='Control')
+lmer(y ~ curr_ptsd_sev_harmon + Age + Sex + (1|SITE)),filter(curr_ptsd_dx=='PTSD')
