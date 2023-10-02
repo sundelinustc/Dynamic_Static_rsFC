@@ -218,7 +218,20 @@ fdir <- file.path('..',  'Results', 'DS', 'Stats')
 
 ### Run all models
 ```{r,echo=FALSE}
-source("./DS/DS_stat.R")
+source("./DS/DS_stat_para.R")
+
+# files of cleaned data & cleaned data info
+fn_cleaned <- file.path('..', 'Processes', 'Data_cleaned.csv')
+fn_info    <- file.path('..', 'Processes', 'Data_cleaned_info.csv')
+# names of columns as dependent variables (Y)
+Yname <- fn_cleaned %>% fread() %>% as.data.frame() %>% select(starts_with("FC")) %>% colnames()
+# file of statistical models
+fn_models <- file.path('..',"Processes","Statistical_Models.csv")
+# directory for final statistical results & model estimations
+fdir_o <- file.path('..',  'Results', 'DS', 'Stats')
+
+DS_stat_para(fn_cleaned, fn_info=NULL, Y=Yname, fn_models, fdir_o)
+
 
 # # models for main & interaction effects
 # for (mdl in mdls){
