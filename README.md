@@ -7,7 +7,7 @@ Dynamic and Static resting-state functional connectivity: ENIGMA PGC PTSD
 Computes atlas-based **dynamic functional connectivity** from resting-state fMRI preprocessed with **HALFpipe** (ENIGMA/PGC pipeline). Uses a sliding-window approach: region-to-region correlations are recomputed across successive time windows, and DFC is defined as the **standard deviation of each connection's correlation across windows**. Runs subjects in parallel and can sweep multiple window/overlap combinations in one call.
 
 **Input** (HALFpipe outputs):
-- Parcel timeseries per subject — headerless TSV/CSV, rows = timepoints, columns = atlas regions (Schaefer-2011 combined atlas, e.g. `*_atlas-schaefer2011Combined_timeseries.tsv`), under a `<site>/<subject>/` layout.
+- Parcel timeseries per subject — headerless TSV/CSV, rows = timepoints, columns = atlas regions (e.g. `*_atlas-schaefer2011Combined_timeseries.tsv`), under a `<site>/<subject>/` layout.
 - Matching `.json` sidecar per file, providing `RepetitionTime` (per-subject TR read automatically; files without it are skipped).
 
 **Output:**
