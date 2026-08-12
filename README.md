@@ -1,5 +1,5 @@
-# Dynamic_Static_rsFC
-Dynamic and Static resting-state functional connectivity: ENIGMA PGC PTSD
+
+# Dynamic resting-state functional connectivity: ENIGMA PGC PTSD
 
 
 ## `dfc_atlas_wf.py` — Atlas-based Dynamic Functional Connectivity (DFC)
